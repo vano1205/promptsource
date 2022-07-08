@@ -153,6 +153,112 @@ class Template(yaml.YAMLObject):
         else:
             return None
 
+    def my_apply(self, example, truncate=True, highlight_variables=False):
+        def id_and_mapping_2 (key:str, post_parent, pre_parent, post_item, pre_item, id):
+            #print(key, item)
+            if type(post_item)==list:
+                for i in range(len(post_item)):
+                    id_and_mapping_2(key+"_"+str(i), post_item, pre_item, post_item[i], pre_item[i], id)
+            elif type(post_item)==dict:
+                for part_key in post_item.keys():
+                    id_and_mapping_2(key+"_"+part_key,post_item,pre_item, post_item[part_key], pre_item[part_key],id)
+            else:
+                id[key] = post_item
+                id[key] = pre_item
+                if type(post_parent) == list:
+                    index = post_parent.index(post_item)
+                    post_parent.pop(index)
+                    index = pre_parent.index(pre_item)
+                    pre_parent.pop(index)
+                    if key in ['label','star']  or type(post_item)==bool:
+                        post_parent.insert(index, post_item)
+                        pre_parent.insert(index,pre_item)
+                    else:
+                        post_parent.insert(index, key)
+                        pre_parent.insert(index,"/{/{" +key+"/}/}")
+                    # post_parent.insert(index, key)
+                    # pre_parent.insert(index,"/{/{" +key+"/}/}")
+                elif type(post_parent) == dict:
+                    for parent_key in dict(post_parent).keys():
+                        if post_parent[parent_key] == post_item:
+                            post_parent.pop(parent_key)
+                            pre_parent.pop(parent_key)
+                            if key in ['label','star', 'span1_index', 'span2_index', 'idx'] or type(post_item)==bool:
+                                post_parent[parent_key]=post_item
+                                pre_parent[parent_key]=pre_item
+                            else:
+                                post_parent[parent_key]=key
+                                pre_parent[parent_key]="/{/{" +key+"/}/}"
+                            # post_parent[parent_key]=key
+                            # pre_parent[parent_key]="/{/{" +key+"/}/}"
+                else:
+                    print("\n\n\n\n\n\nerror!\n\n\n\n\n\n\n\n")
+        """
+        Creates a prompt by applying this template to an example
+        :param example: the dataset example to create a prompt for
+        :param truncate: if True, example fields will be truncated to TEXT_VAR_LENGTH chars
+        :param highlight_variables: highlight the added variables
+        :return: tuple of 2 strings, for prompt and output
+        """
+        jinja = self.jinja
+        #print(jinja)
+        prompt = jinja.split('|||')[0]
+        import re
+        if_0 = [m.start() for m in re.finditer('{% if', prompt)]
+        ifend_0 = [m.start() for m in re.finditer('{% endif %}', prompt)]
+        for_0 = [m.start() for m in re.finditer('{% for', prompt)]
+        forend_0 = [m.start() for m in re.finditer('{% endfor %}', prompt)]
+        if_0 = if_0[:(len(if_0)-len(ifend_0))]
+        for_0 = for_0[:(len(for_0)-len(forend_0))]
+        cnt=0
+        while(len(if_0)>0 or len(for_0)>0):
+            if if_0[0]==cnt:
+                prompt+="{% endif %}"
+                if_0.pop(0)
+            elif for_0[0]==cnt:
+                prompt+="{% endfor %}"
+                for_0.pop(0)
+            cnt+=1
+        # Truncates the prompt if needed
+        if truncate:
+            trunc_command = (
+                f" | string | truncate({TEXT_VAR_LENGTH}) }}}}"  # Escaping curly braces requires doubling them
+            )
+            prompt = prompt.replace("}}", trunc_command)
+        # Highlights text that was substituted for variables, if requested
+        if highlight_variables:
+            prompt = prompt.replace("}}", " | highlight }}")
+        protected_example = self._escape_pipe(example)
+        # Adds in answer_choices variable
+        if "answer_choices" in protected_example:
+            raise ValueError("Example contains the restricted key 'answer_choices'.")
+        protected_example["answer_choices"] = self.get_answer_choices_list(example)
+        # Renders the Jinja template
+        # Splits on the separator, and then replaces back any occurrences of the
+        # separator in the original example
+        #print(protected_example)
+        input = {}
+        import copy
+        pre_mapping = copy.deepcopy(protected_example)
+        post_mapping = copy.deepcopy(protected_example)
+        for key in protected_example.keys():
+            #print(key, value)
+            if key!="choice1" and key!="choice2" and key!="answer_choices" and key!="option1" and key!="option2":
+                id_and_mapping_2(key, post_mapping, pre_mapping, post_mapping[key], pre_mapping[key], input)
+            # input.update(add_id)
+            # mapping.update([add_mapping])
+            # post_mapping.update([post_add_mapping])
+        #print(prompt, "\n\n\n\n", pre_mapping,"\n\n\n\n",post_mapping, "\n\n\n\n", input)
+        rtemplate = env.from_string(prompt)
+        #print(vars(rtemplate))
+        rendered_example = rtemplate.render(**pre_mapping)
+        post_rendered_example = rtemplate.render(**post_mapping)
+        output = ""
+        for i in input.keys():
+            if "/{/{"+i+"/}/}" in rendered_example:
+                output+= (i + ": " + input[i] + "\n")
+        return output, post_rendered_example
+
     def apply(self, example, truncate=True, highlight_variables=False):
         """
         Creates a prompt by applying this template to an example
