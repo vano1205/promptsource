@@ -259,6 +259,69 @@ class Template(yaml.YAMLObject):
                 output+= (i + ": " + input[i] + "\n")
         return output, post_rendered_example
 
+    def my_apply_instruct(self, example, truncate=True, highlight_variables=False):
+        """
+        Creates a prompt by applying this template to an example
+
+        :param example: the dataset example to create a prompt for
+        :param truncate: if True, example fields will be truncated to TEXT_VAR_LENGTH chars
+        :param highlight_variables: highlight the added variables
+        :return: tuple of 2 strings, for prompt and output
+        """
+        jinja = self.jinja
+        instruct = ""
+        # Truncates the prompt if needed
+
+        import re
+        [input_string, output_string] = jinja.split('|||')
+        input_iter = re.finditer('^[^\}\{]+\{|\}[^\}\{]+\{|\}[^\}\{]+$', jinja.split('|||')[0])
+        input_result = ""
+        tmp=0
+        flag = 0
+        #0...10{{}}20...30{{}}40...40
+
+        for r in input_iter:
+            
+            (start, end) = r.span()
+            if input_string[start]=='}':
+                start+=1
+            if input_string[end-1]=='{':
+                end-=1
+            input_result+=input_string[flag:start]
+            instruct += f'<extra_id_{tmp}> {input_string[start:end]} '
+            input_result+=f'<extra_id_{tmp}>'
+            flag = end
+            tmp+=1
+        input_result+=input_string[flag:]
+        jinja=f'{input_result}|||{output_string}'
+        #print("input", input_result)
+        if truncate:
+            trunc_command = (
+                f" | string | truncate({TEXT_VAR_LENGTH}) }}}}"  # Escaping curly braces requires doubling them
+            )
+            jinja = jinja.replace("}}", trunc_command)
+
+        # Highlights text that was substituted for variables, if requested
+        if highlight_variables:
+            jinja = jinja.replace("}}", " | highlight }}")
+        rtemplate = env.from_string(jinja)
+
+        protected_example = self._escape_pipe(example)
+
+        # Adds in answer_choices variable
+        if "answer_choices" in protected_example:
+            raise ValueError("Example contains the restricted key 'answer_choices'.")
+
+        protected_example["answer_choices"] = self.get_answer_choices_list(example)
+
+        # Renders the Jinja template
+        rendered_example = rtemplate.render(**protected_example)
+
+        # Splits on the separator, and then replaces back any occurrences of the
+        # separator in the original example
+        input, target = [self._unescape_pipe(part).strip() for part in rendered_example.split("|||")]
+        return f'input: {input}\n output: {target}', instruct
+
     def apply(self, example, truncate=True, highlight_variables=False):
         """
         Creates a prompt by applying this template to an example
