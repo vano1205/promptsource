@@ -258,7 +258,50 @@ class Template(yaml.YAMLObject):
             if "/{/{"+i+"/}/}" in rendered_example:
                 output+= (i + ": " + input[i] + "\n")
         return output, post_rendered_example
+    #my apply instruct: mask whole instruct
+    #my apply instruct 2: mask 15% of input(input+instruct) by 25 spans
+    def my_apply_instruct_2(self, example, corrupt_rate = 0.15, mean_span = 3.0, min_span = 1, max_span = 5):
+        input, target = self.apply(example)
+        list_input = input.split(' ')
+        length = len(list_input)
+        #print(length)
+        total_span = int(length * corrupt_rate / mean_span)
+        begin_list= sorted(random.sample(list(range(length-2*total_span)), total_span))
+        #print(total_span)
+        #print(begin_list)
+        end_list = [0]*len(begin_list)
+        cnt = 0
+        preprocessed_target=''
+        for i in range(len(begin_list)):
+            begin_list[i]+=2*i
+            if i==0:
+                mean = 0
+            else:
+                mean = cnt/i
+            if i == len(begin_list)-1:
+                next= len(list_input)
+            else:
+                next = begin_list[i+1]-begin_list[i]
+            #print(begin_list[i], next, mean)
+            if mean ==0:
+                #print('begin')
+                end_list[i] = begin_list[i]+ min([random.randint(min_span, max_span), next])
+            elif mean >mean_span:
+                #print('mean span less')
+                end_list[i] = begin_list[i]+ min([random.randint(min_span, int(mean_span)),next])
+            else:
+                #print('mean span bigger')
+                end_list[i] = begin_list[i]+ min([random.randint(int(mean_span), max_span), next])
+            #print(end_list[i])
+            cnt += end_list[i]- begin_list[i]
+            corrupted = list_input[begin_list[i]:end_list[i]]
+            string_target = ' '.join(corrupted)
+            preprocessed_target+=f'<extra_id_{i}> {string_target} '
+            del list_input[begin_list[i]:end_list[i]]
+            list_input.insert(begin_list[i], f'<extra_id_{i}>')
+        preprocessed_input = ' '.join(list_input)
 
+        return f'input: {preprocessed_input} output: {target}', preprocessed_target
     def my_apply_instruct(self, example, truncate=True, highlight_variables=False):
         """
         Creates a prompt by applying this template to an example
