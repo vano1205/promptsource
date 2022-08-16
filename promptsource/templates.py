@@ -260,8 +260,7 @@ class Template(yaml.YAMLObject):
         return output, post_rendered_example
     #my apply instruct: mask whole instruct
     #my apply instruct 2: mask 15% of input(input+instruct) by 25 spans
-    def my_apply_instruct_2(self, example, corrupt_rate = 0.15, mean_span = 3.0, min_span = 1, max_span = 5):
-        input, target = self.apply(example)
+    def my_apply_spliter(self, input, corrupt_rate = 0.15, mean_span = 3.0, min_span = 1, max_span = 5):
         list_input = input.split(' ')
         length = len(list_input)
         #print(length)
@@ -301,7 +300,96 @@ class Template(yaml.YAMLObject):
             list_input.insert(begin_list[i], f'<extra_id_{i}>')
         preprocessed_input = ' '.join(list_input)
 
+        return preprocessed_input, preprocessed_target
+    #mask 15% of whole input+instruction
+    def my_apply_instruct_2(self, example):
+        input, target = self.apply(example)
+        preprocessed_input, preprocessed_target = self.my_apply_spliter(input)       
         return f'input: {preprocessed_input} output: {target}', preprocessed_target
+    #instruct_4: mask whole target
+    def my_apply_instruct_4(self, example):
+        input, target = self.apply(example)
+        return f'input: {input}\n output: <extra_id_0>', f'<extra_id_0> {target}'
+    # instruct_3:mask whole input
+    def my_apply_instruct_3(self, example):
+        input, target, instruct= self.my_apply_instruct_helper(example)
+        input_list = input.split("<extra_id_[0-9]+>")
+        input_mask =""
+        input_dict = {}
+        for index in range(len(input_list)):
+            key=f'<extra_id_{index}>'
+            input_dict[key] = input_list[index]
+            input_mask+=key+instruct[key]
+        input_dict_string = ""
+        for key, value in input_dict.items():
+            input_dict_string+=f"{key} {value}"
+        return  f'input: {input_mask}\n output: {target}', input_dict_string
+      
+
+    #split input/instruct/target
+    def my_apply_instruct_helper(self, example, truncate=True, highlight_variables=False):
+        """
+        Creates a prompt by applying this template to an example
+
+        :param example: the dataset example to create a prompt for
+        :param truncate: if True, example fields will be truncated to TEXT_VAR_LENGTH chars
+        :param highlight_variables: highlight the added variables
+        :return: tuple of 2 strings, for prompt and output
+        """
+        jinja = self.jinja
+        instruct = {}
+        # Truncates the prompt if needed
+
+        import re
+        [input_string, output_string] = jinja.split('|||')
+        input_iter = re.finditer('^[^\}\{]+\{|\}[^\}\{]+\{|\}[^\}\{]+$', jinja.split('|||')[0])
+        input_result = ""
+        tmp=0
+        flag = 0
+        #0...10{{}}20...30{{}}40...40
+
+        for r in input_iter:
+            
+            (start, end) = r.span()
+            if input_string[start]=='}':
+                start+=1
+            if input_string[end-1]=='{':
+                end-=1
+            input_result+=input_string[flag:start]
+            instruct[f'<extra_id_{tmp}>'] = input_string[start:end] '
+            input_result+=f'<extra_id_{tmp}>'
+            flag = end
+            tmp+=1
+        input_result+=input_string[flag:]
+        jinja=f'{input_result}|||{output_string}'
+        #print("input", input_result)
+        if truncate:
+            trunc_command = (
+                f" | string | truncate({TEXT_VAR_LENGTH}) }}}}"  # Escaping curly braces requires doubling them
+            )
+            jinja = jinja.replace("}}", trunc_command)
+
+        # Highlights text that was substituted for variables, if requested
+        if highlight_variables:
+            jinja = jinja.replace("}}", " | highlight }}")
+        rtemplate = env.from_string(jinja)
+
+        protected_example = self._escape_pipe(example)
+
+        # Adds in answer_choices variable
+        if "answer_choices" in protected_example:
+            raise ValueError("Example contains the restricted key 'answer_choices'.")
+
+        protected_example["answer_choices"] = self.get_answer_choices_list(example)
+
+        # Renders the Jinja template
+        rendered_example = rtemplate.render(**protected_example)
+
+        # Splits on the separator, and then replaces back any occurrences of the
+        # separator in the original example
+        input, target = [self._unescape_pipe(part).strip() for part in rendered_example.split("|||")]
+        return input, target, instruct
+    #mask whole instruct
     def my_apply_instruct(self, example, truncate=True, highlight_variables=False):
         """
         Creates a prompt by applying this template to an example
